@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: aml
+      POSTGRES_PASSWORD: aml
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-databases.sh:/docker-entrypoint-initdb.d/01-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aml -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://aml:aml@postgres:5432/mlflow
+      MLFLOW_ARTIFACT_ROOT: file:///mlflow/artifacts
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  feast-feature-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.feast
+    ports:
+      - "6566:6566"
+    environment:
+      FEAST_FS_YAML_FILE_PATH: /app/feast_repo/feature_store.docker.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../data/processed:/app/data/processed:ro
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:

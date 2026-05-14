@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir mlflow psycopg2-binary
+
+ENV MLFLOW_HOST=0.0.0.0
+ENV MLFLOW_PORT=5000
+
+EXPOSE 5000
+
+# Defaults; override in docker-compose for image-local paths
+ENV MLFLOW_BACKEND_STORE_URI=postgresql://aml:aml@postgres:5432/mlflow
+ENV MLFLOW_ARTIFACT_ROOT=file:///mlflow/artifacts
+
+CMD ["sh", "-c", "mlflow server --host ${MLFLOW_HOST} --port ${MLFLOW_PORT} --backend-store-uri ${MLFLOW_BACKEND_STORE_URI} --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}"]

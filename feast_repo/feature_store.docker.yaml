@@ -1,0 +1,17 @@
+project: aml_inspector
+registry: data/registry.db
+provider: local
+
+offline_store:
+  type: file
+
+# Used inside Docker Compose: Postgres service hostname is `postgres`.
+online_store:
+  type: postgres
+  host: postgres
+  port: 5432
+  database: feast
+  user: aml
+  password: aml
+  db_schema: public
+  sslmode: disable

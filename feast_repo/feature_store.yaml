@@ -1,0 +1,19 @@
+project: aml_inspector
+registry: data/registry.db
+provider: local
+
+# File-backed offline retrieval (Dask engine). Parquet paths come from FileSource definitions.
+offline_store:
+  type: file
+
+# Postgres must be running (see docker/docker-compose.yml) before `feast apply` / materialization.
+# For the optional feature-server container, override host with `postgres` via a mounted override yaml or env in Dockerfile.
+online_store:
+  type: postgres
+  host: 127.0.0.1
+  port: 5432
+  database: feast
+  user: aml
+  password: aml
+  db_schema: public
+  sslmode: disable
