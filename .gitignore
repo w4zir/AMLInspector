@@ -217,11 +217,19 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# macOS
+.DS_Store
+
 # AMLInspector / MLOps
-.env
 data/raw/*
 !data/raw/.gitkeep
 data/interim/*
 !data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
 feast_repo/data/registry.db
 mlruns/
+# Local tooling / vendored deps (do not commit)
+.deps/
+# Accidental Kaggle API key in repo root (canonical path is ~/.kaggle/kaggle.json)
+/kaggle.json

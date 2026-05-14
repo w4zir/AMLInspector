@@ -48,6 +48,28 @@ Download into `data/raw/`, for example:
 kaggle datasets download -d ealtman2019/ibm-transactions-for-anti-money-laundering-aml -p data/raw --unzip
 ```
 
+Or use the bundled helper (requires [Kaggle API credentials](https://www.kaggle.com/docs/api) and `pip install kaggle` so the `kaggle` CLI is on your `PATH`):
+
+```bash
+python -m aml_inspector.data.kaggle_download
+```
+
+This fetches `HI-Small_Trans.csv` and `HI-Medium_Trans.csv` by default. Use `python -m aml_inspector.data.kaggle_download --help` for options.
+
+### Home-bank subset (sender or receiver)
+
+After the CSVs are in `data/raw/`, filter to a single bank that appears as **From Bank** or **To Bank**, auto-picking a bank with strong counts of both laundering and non-laundering involvement (override with `--bank-id`):
+
+```bash
+python -m aml_inspector.data.preprocess_home_bank \
+  --input-files HI-Small_Trans.csv HI-Medium_Trans.csv
+```
+
+Outputs:
+
+- `data/processed/home_bank_transactions.parquet` — filtered rows plus `event_timestamp` (from `Timestamp`) when present
+- `data/interim/home_bank_selection_summary.json` — chosen bank id and counts
+
 Then align entity and timestamp column names in `src/aml_inspector/data/datasets.py` and `feast_repo/entities.py` after EDA in `notebooks/01_eda_ibm_aml.ipynb`.
 
 ## Training (MLflow smoke)
