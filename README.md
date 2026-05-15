@@ -58,20 +58,26 @@ This fetches `HI-Small_Trans.csv` and `HI-Medium_Trans.csv` by default. Use `pyt
 
 ### Experiment feature data (single command)
 
-With raw CSVs under `data/raw/`, build **split-safe** home-bank Parquets (HI-Medium vs HI-Small), transaction/account feature tables, `experiment_entity_df_{medium,small}.parquet`, and `data/interim/feature_build_manifest.json`:
+With raw CSVs under `data/raw/`, build **split-safe** home-bank Parquets (HI-Medium vs HI-Small), transaction/account feature tables, and scoped manifests under `data/processed/` and `data/interim/`:
 
 ```bash
-# Same bank for HI-Medium (train/eval) and HI-Small (test)
+# One bank → data/processed/bank_789/ and data/interim/bank_789/feature_build_manifest.json
 python -m aml_inspector.pipelines.build_feature_data --bank-id 789
 
-# Different banks per split (e.g. train/eval on Medium bank 70, test on Small bank 42)
+# Several banks in one command (isolated output per id)
+python -m aml_inspector.pipelines.build_feature_data --bank-id 4 70 123
+
+# Different banks per split → data/processed/medium_70_small_42/
 python -m aml_inspector.pipelines.build_feature_data --medium-bank-id 70 --small-bank-id 42
+
+# Train on a specific bank's manifest
+python -m aml_inspector.modeling.train --manifest data/interim/bank_789/feature_build_manifest.json
 ```
 
-- Omit split-specific ids to auto-pick a balanced home bank **per CSV** (Medium and Small independently).
-- `--bank-id` applies to both splits when `--medium-bank-id` / `--small-bank-id` are not set.
-- Feature Parquets are named `{bank_id}_{HI_MEDIUM|HI_SMALL}_{table}.parquet`, e.g. `70_HI_MEDIUM_account_daily_features.parquet`.
-- Feature groups (enable/disable, descriptions, compute cost) live in [`config/feature_build.json`](config/feature_build.json). Override with `--feature-config /path/to/feature_build.json`. Disabled groups still emit the same Parquet columns with neutral defaults so Feast schemas stay stable; `data/interim/feature_build_manifest.json` records the config path, per-group flags, and a signature used with `--skip-preprocess` cache skips.
+- Omit split-specific ids to auto-pick a balanced home bank **per CSV** (Medium and Small independently); scoped dirs are `bank_<id>` when both splits match, else `medium_<m>_small_<s>`.
+- `--bank-id` accepts one or more ids (each run uses both HI-Medium and HI-Small for that bank). Do not combine with `--medium-bank-id` / `--small-bank-id`.
+- Feature Parquets are named `{bank_id}_{HI_MEDIUM|HI_SMALL}_{table}.parquet` inside each scoped directory, e.g. `data/processed/bank_70/70_HI_MEDIUM_account_daily_features.parquet`.
+- Feature groups (enable/disable, descriptions, compute cost) live in [`config/feature_build.json`](config/feature_build.json). Override with `--feature-config /path/to/feature_build.json`. Disabled groups still emit the same Parquet columns with neutral defaults so Feast schemas stay stable; each scoped `data/interim/<subdir>/feature_build_manifest.json` records the config path, per-group flags, and a signature used with `--skip-preprocess` cache skips.
 - Rows are filtered to the home bank (sender or receiver) again at feature-build time (defensive if Parquets were swapped or stale).
 - Add `--apply-feast` to run `feast apply` in `feast_repo/` (requires **Postgres** up for the default online store: `docker compose -f docker/docker-compose.yml up -d postgres`). Point Feast at one generated file set:
 
@@ -82,7 +88,7 @@ python -m aml_inspector.pipelines.build_feature_data --medium-bank-id 70 --small
   ```
 
   Without these variables, Feast uses legacy static filenames (`txn_level_features.parquet`, etc.) for docker bootstrap stubs.
-- After a full build, reuse existing filtered Parquet with `--skip-preprocess` (reads `data/interim/home_bank_selection_summary.json`; override banks with `--medium-bank-id` / `--small-bank-id` or `--bank-id`).
+- After a full build, reuse existing scoped Parquets with `--skip-preprocess` (requires `--bank-id` or split-pair ids so the pipeline knows which `bank_*` / `medium_*_small_*` directory to read).
 
 Split preprocess only (without feature engineering):
 
@@ -108,7 +114,7 @@ For experiments prefer **`build_feature_data`** above (separate Medium/Small + f
 
 ## Training and evaluation (Champion–Challenger)
 
-After feature data is built (`build_feature_data`), train on **HI-Medium** (80/20 stratified validation) and evaluate on **HI-Small** holdout only.
+After feature data is built (`build_feature_data`), train and evaluate on **all available HI-Medium and HI-Small** feature Parquets (80/20 stratified validation during training; frozen-model holdout during evaluation).
 
 With the MLflow server running:
 
@@ -118,11 +124,17 @@ export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
 # Train XGBoost Champion + IsolationForest Challenger; tune thresholds on validation
 python -m aml_inspector.modeling.train --experiment aml_champion_challenger
 
-# Holdout test (frozen models/thresholds; no retuning on Small)
+# Holdout test (frozen models/thresholds; no retuning)
 python -m aml_inspector.modeling.evaluate --run-id <TRAIN_RUN_ID>
+
+# Multi-bank: combine HI-Medium + HI-Small from several bank folders
+python -m aml_inspector.modeling.train --training-bank-ids 3 4 5 6
+python -m aml_inspector.modeling.evaluate --run-id <TRAIN_RUN_ID> --testing-bank-ids 21 22
 ```
 
-Options include `--manifest`, `--random-state`, `--val-size`, `--c-miss`, `--c-false-alarm`, and `--review-budget-fraction` (challenger alert budget on validation). Imbalance is handled via XGBoost `scale_pos_weight = neg/pos` on the training split.
+Bank-id mode reads `data/processed/bank_<id>/`, loads every available `{id}_HI_MEDIUM_*` and `{id}_HI_SMALL_*` experiment/account_daily pair, joins `account_daily_features` for model inputs, and **skips** only missing bank/split pairs (a bank with Medium but not Small still contributes Medium rows). Manifest mode combines `experiment_medium` and `experiment_small` from the manifest the same way. Use either manifest mode or `--training-bank-ids` / `--testing-bank-ids`, not both. Feature columns follow enabled groups in [`config/feature_build.json`](config/feature_build.json) (override with `--feature-config`).
+
+Options include `--manifest`, `--training-bank-ids`, `--testing-bank-ids`, `--processed-dir`, `--feature-config`, `--random-state`, `--val-size`, `--c-miss`, `--c-false-alarm`, and `--review-budget-fraction` (challenger alert budget on validation). Imbalance is handled via XGBoost `scale_pos_weight = neg/pos` on the training split.
 
 See [`docs/TODO/TODO_experimentation.md`](docs/TODO/TODO_experimentation.md) for the full checklist.
 
