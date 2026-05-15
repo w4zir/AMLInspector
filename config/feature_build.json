@@ -1,0 +1,44 @@
+{
+  "features": {
+    "base_transaction": {
+      "enabled": true,
+      "description": "Normalize columns, timestamps, internal account id, USD amount, transaction id, and label. Required for all downstream tables.",
+      "cost": "cheap"
+    },
+    "corridor_risk_score": {
+      "enabled": true,
+      "description": "Country corridor risk from Medium-only log-count weights; applied frozen to both splits.",
+      "cost": "medium"
+    },
+    "weekly_internal_graph": {
+      "enabled": false,
+      "description": "Prior ISO-week internal graph degree and component size from Medium (NetworkX per week).",
+      "cost": "expensive"
+    },
+    "rolling_account_activity": {
+      "enabled": true,
+      "description": "Per-account rolling windows: 24h outbound velocity, dwell since last inbound, 7d/30d unique internal counterparties.",
+      "cost": "expensive"
+    },
+    "company_age_days_proxy": {
+      "enabled": true,
+      "description": "Days since first observed event for the account within the same data split (cumulative min timestamp).",
+      "cost": "cheap"
+    },
+    "pep_proxy_synthetic": {
+      "enabled": true,
+      "description": "Deterministic synthetic PEP-like flag from salted account hash (not real screening).",
+      "cost": "medium"
+    },
+    "hrj_country_flag": {
+      "enabled": true,
+      "description": "Grey-list country token match on the counterparty leg country string (MVP heuristic).",
+      "cost": "cheap"
+    },
+    "account_daily": {
+      "enabled": true,
+      "description": "Daily rollup of transaction count and USD sum per account and split.",
+      "cost": "cheap"
+    }
+  }
+}

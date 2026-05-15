@@ -1,1 +1,1 @@
-"""Reserved for orchestration (Airflow, Prefect, etc.)."""
+"""Orchestration entrypoints (e.g. :mod:`aml_inspector.pipelines.build_feature_data`)."""

@@ -1,0 +1,2 @@
+# Shell scripts must use LF so Linux containers (Feast, Postgres init) run the shebang correctly.
+*.sh text eol=lf

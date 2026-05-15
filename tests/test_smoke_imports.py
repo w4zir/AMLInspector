@@ -11,5 +11,3 @@ def test_paths_exist():
     assert FEAST_REPO.is_dir()
     assert (FEAST_REPO / "feature_store.yaml").is_file()
     assert DATA_PROCESSED.is_dir()
-    sample = DATA_PROCESSED / "account_daily_features.parquet"
-    assert sample.is_file(), "Sample Parquet required for Feast FileSource smoke path"

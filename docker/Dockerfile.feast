@@ -6,9 +6,14 @@ RUN pip install --no-cache-dir "feast>=0.40" "psycopg[binary,pool]>=3.1"
 
 COPY feast_repo /app/feast_repo
 COPY data/processed /app/data/processed
+COPY docker/bootstrap_feast_parquets.py /app/docker/bootstrap_feast_parquets.py
+COPY docker/ensure_feast_postgres_databases.py /app/docker/ensure_feast_postgres_databases.py
+
+RUN python /app/docker/bootstrap_feast_parquets.py
 
 COPY docker/feast-entrypoint.sh /usr/local/bin/feast-entrypoint.sh
-RUN chmod +x /usr/local/bin/feast-entrypoint.sh
+# Windows checkouts often use CRLF; Linux shebang then becomes "bash\r" and the container exits immediately.
+RUN sed -i 's/\r$//' /usr/local/bin/feast-entrypoint.sh && chmod +x /usr/local/bin/feast-entrypoint.sh
 
 ENV FEAST_FS_YAML_FILE_PATH=/app/feast_repo/feature_store.docker.yaml
 

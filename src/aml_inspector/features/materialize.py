@@ -8,7 +8,6 @@ Run from repo root after `cd feast_repo` pattern:
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 from aml_inspector.config import FEAST_REPO

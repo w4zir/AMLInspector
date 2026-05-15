@@ -42,8 +42,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Read-write: entrypoint may write minimal Parquet stubs when files are missing (empty bind mount).
     volumes:
-      - ../data/processed:/app/data/processed:ro
+      - ../data/processed:/app/data/processed
 
 volumes:
   postgres_data:
