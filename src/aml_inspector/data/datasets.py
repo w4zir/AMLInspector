@@ -98,6 +98,26 @@ def feature_parquet_filename(*, bank_id: int, dataset_token: str, base_name: str
     return f"{int(bank_id)}_{dataset_token}_{base_name}.parquet"
 
 
+def feast_feature_parquet_path(
+    *,
+    table_base: str,
+    bank_id: int,
+    dataset_token: str,
+    processed_root: Path | None = None,
+    output_subdir: str | None = None,
+) -> Path:
+    """Resolved Parquet path for Feast FileSources under a scoped processed subdir."""
+    subdir = output_subdir or bank_scoped_output_subdir(bank_id=bank_id)
+    proc = feature_output_processed_dir(
+        output_subdir=subdir, processed_root=processed_root
+    )
+    return proc / feature_parquet_filename(
+        bank_id=bank_id,
+        dataset_token=dataset_token,
+        base_name=table_base,
+    )
+
+
 def feature_parquet_paths(
     *,
     medium_bank_id: int,

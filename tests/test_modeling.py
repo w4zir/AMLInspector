@@ -16,9 +16,11 @@ from aml_inspector.data.datasets import (
     EVENT_TIMESTAMP_COL,
     FEATURE_BASE_ACCOUNT_DAILY,
     FEATURE_BASE_EXPERIMENT,
+    FEATURE_BASE_TXN_LEVEL,
     LABEL_COL,
     TRANSACTION_ID_COL,
     bank_scoped_output_subdir,
+    feast_feature_parquet_path,
     feature_output_processed_dir,
     feature_parquet_filename,
 )
@@ -66,6 +68,25 @@ def _synthetic_experiment_frame(n: int, *, split: str, pos_rate: float = 0.02) -
             "corridor_risk_score": rng.uniform(0, 1, size=n),
             "hrj_country_flag": rng.choice([True, False], size=n),
         }
+    )
+
+
+def test_feast_feature_parquet_path_uses_bank_scoped_subdir(tmp_path: Path) -> None:
+    bank_id = 18
+    path = feast_feature_parquet_path(
+        table_base=FEATURE_BASE_TXN_LEVEL,
+        bank_id=bank_id,
+        dataset_token=DATASET_TOKEN_HI_MEDIUM,
+        processed_root=tmp_path,
+    )
+    assert path == (
+        tmp_path
+        / "bank_18"
+        / feature_parquet_filename(
+            bank_id=bank_id,
+            dataset_token=DATASET_TOKEN_HI_MEDIUM,
+            base_name=FEATURE_BASE_TXN_LEVEL,
+        )
     )
 
 

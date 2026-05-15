@@ -3,6 +3,7 @@
 Run from repo root::
 
   python -m aml_inspector.pipelines.build_feature_data --bank-id 4 70 123
+  python -m aml_inspector.pipelines.build_feature_data --bank-id 30-33 --apply-feast
   python -m aml_inspector.pipelines.build_feature_data --medium-bank-id 70 --small-bank-id 42
   python -m aml_inspector.pipelines.build_feature_data --bank-id 123 --apply-feast
 """
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aml_inspector.cli.bank_ids import BANK_ID_LIST_HELP_SUFFIX, BankIdListAction
 from aml_inspector.config import DATA_INTERIM, DATA_PROCESSED, FEAST_REPO
 from aml_inspector.data.datasets import (
     MANIFEST_JSON,
@@ -39,7 +41,7 @@ from aml_inspector.features.feature_build_config import (
     default_feature_build_config_path,
     load_feature_build_config,
 )
-from aml_inspector.features.materialize import feast_apply
+from aml_inspector.features.materialize import feast_apply_for_feature_build_run
 
 logger = logging.getLogger(__name__)
 
@@ -479,13 +481,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--bank-id",
-        type=int,
         nargs="+",
+        action=BankIdListAction,
         default=None,
         metavar="BANK_ID",
         help=(
             "One or more home bank ids (Medium and Small use the same id per run). "
-            "Each id writes to data/processed/bank_<id>/ and data/interim/bank_<id>/"
+            "Each id writes to data/processed/bank_<id>/ and data/interim/bank_<id>/. "
+            + BANK_ID_LIST_HELP_SUFFIX
         ),
     )
     parser.add_argument(
@@ -600,8 +603,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply_feast:
             built_runs = [r for r in run_results if r.get("status") != "skipped"]
             if built_runs:
-                logger.info("Running feast apply in %s …", FEAST_REPO.resolve())
-                code = feast_apply(FEAST_REPO)
+                last_run = built_runs[-1]
+                logger.info(
+                    "Running feast apply in %s (subdir=%s) …",
+                    FEAST_REPO.resolve(),
+                    last_run.get("output_subdir"),
+                )
+                code = feast_apply_for_feature_build_run(last_run)
                 if code != 0:
                     logger.error("feast apply exited with code %s", code)
                     return int(code)

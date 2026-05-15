@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from aml_inspector.cli.bank_ids import BANK_ID_LIST_HELP_SUFFIX, BankIdListAction
 from aml_inspector.config import DATA_INTERIM, DATA_PROCESSED, mlflow_tracking_uri
 from aml_inspector.modeling.config import MLFLOW_EXPERIMENT_COMBINED
 from aml_inspector.modeling.data import manifest_path
@@ -47,14 +48,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--testing-bank-ids",
-        type=int,
         nargs="+",
+        action=BankIdListAction,
         default=None,
         metavar="BANK_ID",
         help=(
             "One or more home bank ids; load all available HI-Medium and HI-Small "
             "Parquets from data/processed/bank_<id>/ and combine (skips missing "
-            "bank/split pairs). Not used with --manifest."
+            "bank/split pairs). Not used with --manifest. "
+            + BANK_ID_LIST_HELP_SUFFIX
         ),
     )
     parser.add_argument(

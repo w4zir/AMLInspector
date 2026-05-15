@@ -83,11 +83,13 @@ python -m aml_inspector.modeling.train --manifest data/interim/bank_789/feature_
 
   ```bash
   export AML_FEATURE_BANK_ID=70
-  export AML_FEATURE_DATASET=HI_MEDIUM   # or HI_SMALL for test features
+  export AML_FEATURE_DATASET=HI_MEDIUM   # HI_SMALL only if that split was built
+  # optional when Medium/Small use different home banks:
+  # export AML_FEATURE_OUTPUT_SUBDIR=medium_70_small_42
   cd feast_repo && feast apply
   ```
 
-  Without these variables, Feast uses legacy static filenames (`txn_level_features.parquet`, etc.) for docker bootstrap stubs.
+  Paths resolve to `data/processed/bank_<id>/` (or `AML_FEATURE_OUTPUT_SUBDIR`) automatically. Without env vars, Feast uses legacy flat filenames (`txn_level_features.parquet`, etc.) for docker bootstrap stubs.
 - After a full build, reuse existing scoped Parquets with `--skip-preprocess` (requires `--bank-id` or split-pair ids so the pipeline knows which `bank_*` / `medium_*_small_*` directory to read).
 
 Split preprocess only (without feature engineering):
