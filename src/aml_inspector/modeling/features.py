@@ -12,11 +12,78 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 
 from aml_inspector.data.datasets import LABEL_COL
+from aml_inspector.features.feature_build_config import (
+    FEATURE_GROUP_KEYS,
+    FeatureBuildFlags,
+    LoadedFeatureBuildConfig,
+    default_feature_build_config_path,
+    load_feature_build_config,
+)
 from aml_inspector.modeling.data import NON_FEATURE_COLUMNS
 
+# Model columns produced per enabled group in config/feature_build.json
+FEATURE_GROUP_MODEL_COLUMNS: dict[str, tuple[str, ...]] = {
+    "base_transaction": (
+        "is_outbound",
+        "counterparty_bank_id",
+        "amount_usd",
+        "amount_round_100",
+    ),
+    "corridor_risk_score": ("corridor_risk_score",),
+    "weekly_internal_graph": ("graph_internal_degree", "graph_component_size"),
+    "rolling_account_activity": (
+        "velocity_24h_outbound",
+        "dwell_sec_since_last_inbound",
+        "fanout_unique_internal_7d",
+        "fanout_unique_internal_30d",
+    ),
+    "company_age_days_proxy": ("company_age_days_proxy",),
+    "pep_proxy_synthetic": ("pep_proxy_synthetic",),
+    "hrj_country_flag": ("hrj_country_flag",),
+    "account_daily": ("daily_tx_count", "daily_amount_sum"),
+}
 
-def select_feature_columns(df: pd.DataFrame) -> list[str]:
-    """Numeric/bool model inputs; exclude ids, label, and hash columns."""
+
+def model_columns_for_flags(flags: FeatureBuildFlags) -> list[str]:
+    """Return ordered model column names for enabled feature groups."""
+    cols: list[str] = []
+    for key in FEATURE_GROUP_KEYS:
+        if not getattr(flags, key):
+            continue
+        for col in FEATURE_GROUP_MODEL_COLUMNS[key]:
+            if col not in cols:
+                cols.append(col)
+    return cols
+
+
+def select_feature_columns_from_config(
+    df: pd.DataFrame,
+    feature_build_config: LoadedFeatureBuildConfig,
+) -> list[str]:
+    """Select model inputs from enabled groups in feature_build.json."""
+    wanted = model_columns_for_flags(feature_build_config.flags)
+    missing = [c for c in wanted if c not in df.columns]
+    if missing:
+        raise ValueError(
+            "Experiment frame is missing columns required by feature_build.json: "
+            f"{missing}. Enabled groups: "
+            f"{[k for k in FEATURE_GROUP_KEYS if getattr(feature_build_config.flags, k)]}"
+        )
+    cols = [c for c in wanted if c in df.columns]
+    if not cols:
+        raise ValueError("No feature columns selected from feature_build.json (all groups disabled?)")
+    return cols
+
+
+def select_feature_columns(
+    df: pd.DataFrame,
+    *,
+    feature_build_config: LoadedFeatureBuildConfig | None = None,
+) -> list[str]:
+    """Numeric/bool model inputs, or config-driven columns when ``feature_build_config`` is set."""
+    if feature_build_config is not None:
+        return select_feature_columns_from_config(df, feature_build_config)
+
     cols: list[str] = []
     for c in df.columns:
         if c in NON_FEATURE_COLUMNS:
@@ -29,6 +96,14 @@ def select_feature_columns(df: pd.DataFrame) -> list[str]:
     if not cols:
         raise ValueError("No feature columns selected from experiment frame")
     return cols
+
+
+def load_default_feature_build_config() -> LoadedFeatureBuildConfig:
+    """Load project default ``config/feature_build.json``."""
+    path = default_feature_build_config_path()
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing feature config: {path}")
+    return load_feature_build_config(path)
 
 
 def _to_float_frame(X: pd.DataFrame) -> np.ndarray:

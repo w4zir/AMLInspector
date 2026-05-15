@@ -11,7 +11,7 @@
       "cost": "medium"
     },
     "weekly_internal_graph": {
-      "enabled": false,
+      "enabled": true,
       "description": "Prior ISO-week internal graph degree and component size from Medium (NetworkX per week).",
       "cost": "expensive"
     },

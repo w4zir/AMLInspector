@@ -44,6 +44,20 @@ DEFAULT_PARQUET_SMALL = "home_bank_transactions_small.parquet"
 DEFAULT_SUMMARY = "home_bank_selection_summary.json"
 
 
+class MissingBankRowsError(ValueError):
+    """Raised when an explicitly selected bank has no rows in a split."""
+
+    def __init__(self, *, bank_id: int, path: Path, data_split_source: str | None = None) -> None:
+        split_msg = f" in {data_split_source}" if data_split_source else ""
+        super().__init__(
+            f"No rows matched bank_id={bank_id}{split_msg} after filtering {path}. "
+            "Check column types (integer bank ids)."
+        )
+        self.bank_id = int(bank_id)
+        self.path = path
+        self.data_split_source = data_split_source
+
+
 def _resolve_paths(raw_dir: Path, names: Iterable[str]) -> list[Path]:
     paths: list[Path] = []
     for n in names:
@@ -210,8 +224,10 @@ def filter_csv_to_parquet(
 
     if total_rows == 0:
         output_parquet.unlink(missing_ok=True)
-        raise ValueError(
-            f"No rows matched bank_id={bank_id} after filtering {path}. Check column types (integer bank ids)."
+        raise MissingBankRowsError(
+            bank_id=bank_id,
+            path=path,
+            data_split_source=data_split_source,
         )
 
     return total_rows
@@ -379,26 +395,58 @@ def run_preprocess_medium_small(
     out_s = output_small or (DATA_PROCESSED / DEFAULT_PARQUET_SMALL)
     out_json = summary_json or (DATA_INTERIM / DEFAULT_SUMMARY)
 
-    n_med = filter_csv_to_parquet(
+    available_splits: list[str] = []
+    missing_splits: list[str] = []
+
+    def _try_filter_split(
+        path: Path,
+        selected_bank: int,
+        output_parquet: Path,
+        *,
+        data_split_source: str,
+    ) -> int:
+        try:
+            return filter_csv_to_parquet(
+                path,
+                selected_bank,
+                output_parquet,
+                data_split_source=data_split_source,
+                chunksize=chunksize,
+                add_event_timestamp=add_event_timestamp,
+            )
+        except MissingBankRowsError:
+            missing_splits.append(data_split_source)
+            return 0
+
+    n_med = _try_filter_split(
         path_medium,
         med_selected,
         out_m,
         data_split_source=DATA_SPLIT_MEDIUM,
-        chunksize=chunksize,
-        add_event_timestamp=add_event_timestamp,
     )
-    n_sml = filter_csv_to_parquet(
+    if n_med > 0:
+        available_splits.append(DATA_SPLIT_MEDIUM)
+    n_sml = _try_filter_split(
         path_small,
         sml_selected,
         out_s,
         data_split_source=DATA_SPLIT_SMALL,
-        chunksize=chunksize,
-        add_event_timestamp=add_event_timestamp,
     )
+    if n_sml > 0:
+        available_splits.append(DATA_SPLIT_SMALL)
+
+    if not available_splits:
+        missing_bank = bank_id if bank_id is not None else med_selected
+        raise MissingBankRowsError(
+            bank_id=int(missing_bank),
+            path=path_medium,
+            data_split_source=",".join(missing_splits) if missing_splits else None,
+        )
 
     summary: dict = {
         "medium_bank_id": med_selected,
         "small_bank_id": sml_selected,
+        "available_splits": available_splits,
         "positive_involvement_count_medium": int(pos_med.get(med_selected, 0)),
         "negative_involvement_count_medium": int(neg_med.get(med_selected, 0)),
         "positive_involvement_count_small": int(pos_sml.get(sml_selected, 0)),
@@ -406,10 +454,12 @@ def run_preprocess_medium_small(
         "filtered_row_count_medium": n_med,
         "filtered_row_count_small": n_sml,
         "input_files": [str(path_medium), str(path_small)],
-        "output_parquet_medium": str(out_m.resolve()),
-        "output_parquet_small": str(out_s.resolve()),
+        "output_parquet_medium": str(out_m.resolve()) if n_med > 0 else None,
+        "output_parquet_small": str(out_s.resolve()) if n_sml > 0 else None,
         "chunksize": chunksize,
     }
+    if missing_splits:
+        summary["missing_splits"] = missing_splits
     if med_selected == sml_selected:
         summary["home_bank_id"] = med_selected
         summary["positive_involvement_count"] = summary["positive_involvement_count_medium"]

@@ -18,6 +18,8 @@ MLFLOW_EXPERIMENT_CHALLENGER = "aml_challenger"
 MLFLOW_EXPERIMENT_COMBINED = "aml_champion_challenger"
 
 SPLIT_POLICY_TAG = "medium_80_20_small_holdout"
+COMBINED_DATASET_POLICY_TAG = "combined_hi_medium_hi_small_80_20"
+EVALUATION_DATASET_LABEL = "combined_hi_medium_hi_small"
 
 
 @dataclass
@@ -29,7 +31,7 @@ class ExperimentConfig:
     c_miss: float = DEFAULT_C_MISS
     c_false_alarm: float = DEFAULT_C_FALSE_ALARM
     review_budget_fraction: float = DEFAULT_REVIEW_BUDGET_FRACTION
-    split_policy: str = SPLIT_POLICY_TAG
+    split_policy: str = COMBINED_DATASET_POLICY_TAG
     champion_soft_threshold_margin: float = 0.05
     policy_version: str = "champion_or_challenger_v1"
 
@@ -77,9 +79,17 @@ class ExperimentBundle:
     split_counts: dict[str, SplitCounts]
     champion_params: dict[str, Any] = field(default_factory=dict)
     challenger_params: dict[str, Any] = field(default_factory=dict)
+    training_bank_ids: list[int] = field(default_factory=list)
+    testing_bank_ids: list[int] = field(default_factory=list)
+    loaded_training_bank_ids: list[int] = field(default_factory=list)
+    skipped_training_bank_ids: list[int] = field(default_factory=list)
+    loaded_testing_bank_ids: list[int] = field(default_factory=list)
+    skipped_testing_bank_ids: list[int] = field(default_factory=list)
+    feature_config_path: str = ""
+    feature_config_signature: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "feature_columns": self.feature_columns,
             "frozen_policy": self.frozen_policy.to_dict(),
             "experiment_config": self.experiment_config.to_dict(),
@@ -92,3 +102,20 @@ class ExperimentBundle:
             "champion_params": self.champion_params,
             "challenger_params": self.challenger_params,
         }
+        if self.training_bank_ids:
+            out["training_bank_ids"] = self.training_bank_ids
+        if self.testing_bank_ids:
+            out["testing_bank_ids"] = self.testing_bank_ids
+        if self.loaded_training_bank_ids:
+            out["loaded_training_bank_ids"] = self.loaded_training_bank_ids
+        if self.skipped_training_bank_ids:
+            out["skipped_training_bank_ids"] = self.skipped_training_bank_ids
+        if self.loaded_testing_bank_ids:
+            out["loaded_testing_bank_ids"] = self.loaded_testing_bank_ids
+        if self.skipped_testing_bank_ids:
+            out["skipped_testing_bank_ids"] = self.skipped_testing_bank_ids
+        if self.feature_config_path:
+            out["feature_config_path"] = self.feature_config_path
+        if self.feature_config_signature:
+            out["feature_config_signature"] = self.feature_config_signature
+        return out

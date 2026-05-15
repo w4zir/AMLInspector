@@ -16,14 +16,25 @@ from aml_inspector.data.datasets import (
     MANIFEST_JSON,
     PARQUET_HOME_MEDIUM,
     PARQUET_HOME_SMALL,
+    bank_scoped_output_subdir,
+    feature_output_interim_dir,
+    feature_output_processed_dir,
     feature_parquet_filename,
     feature_parquet_paths,
+    resolve_feature_output_subdir,
+    split_pair_scoped_output_subdir,
 )
 from aml_inspector.data.preprocess_home_bank import run_preprocess_medium_small
 from aml_inspector.features.build_tables import build_all_feature_tables, feature_artifacts_present
 from aml_inspector.features.feature_build_config import (
     default_feature_build_config_path,
     load_feature_build_config,
+)
+from aml_inspector.pipelines.build_feature_data import (
+    FeatureBuildRunSpec,
+    _bank_ids_from_spec,
+    plan_feature_build_runs,
+    run_feature_build,
 )
 
 
@@ -383,3 +394,357 @@ def test_feature_artifacts_present_signature_match(tmp_path: Path) -> None:
     )
     assert loaded is not None
     assert loaded["feature_config_signature"] == sig
+
+
+def test_resolve_feature_output_subdir() -> None:
+    assert resolve_feature_output_subdir(medium_bank_id=4, small_bank_id=4) == "bank_4"
+    assert (
+        resolve_feature_output_subdir(medium_bank_id=70, small_bank_id=42)
+        == "medium_70_small_42"
+    )
+
+
+def test_plan_feature_build_runs_multi_bank() -> None:
+    runs = plan_feature_build_runs(bank_ids=[4, 70], medium_bank_id=None, small_bank_id=None)
+    assert len(runs) == 2
+    assert runs[0].output_subdir == bank_scoped_output_subdir(bank_id=4)
+    assert runs[0].bank_id == 4
+    assert runs[1].output_subdir == bank_scoped_output_subdir(bank_id=70)
+
+
+def test_plan_feature_build_runs_split_pair() -> None:
+    runs = plan_feature_build_runs(bank_ids=None, medium_bank_id=70, small_bank_id=42)
+    assert len(runs) == 1
+    assert runs[0].output_subdir == split_pair_scoped_output_subdir(
+        medium_bank_id=70, small_bank_id=42
+    )
+
+
+def test_plan_feature_build_runs_rejects_mixed_modes() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="Cannot combine"):
+        plan_feature_build_runs(bank_ids=[4], medium_bank_id=70, small_bank_id=42)
+
+
+def test_bank_ids_from_spec() -> None:
+    assert _bank_ids_from_spec(FeatureBuildRunSpec(output_subdir="bank_4", bank_id=4)) == (
+        4,
+        4,
+        "bank_4",
+    )
+    assert _bank_ids_from_spec(
+        FeatureBuildRunSpec(
+            output_subdir="medium_70_small_42",
+            medium_bank_id=70,
+            small_bank_id=42,
+        )
+    ) == (70, 42, "medium_70_small_42")
+    assert _bank_ids_from_spec(FeatureBuildRunSpec(output_subdir=None)) is None
+
+
+def _write_tiny_raw_csvs(raw: Path, *, medium_bank: int, small_bank: int) -> None:
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "HI-Medium_Trans.csv").write_text(
+        _ibm_header()
+        + f"2022-01-01 00:00:00,{medium_bank},1,200,2,500,USD,0\n"
+        + f"2022-01-01 02:00:00,{medium_bank},1,{medium_bank},3,100,USD,0\n",
+        encoding="utf-8",
+    )
+    (raw / "HI-Small_Trans.csv").write_text(
+        _ibm_header() + f"2022-02-01 00:00:00,{small_bank},1,200,9,10,USD,0\n",
+        encoding="utf-8",
+    )
+
+
+def test_run_feature_build_bank_scoped_directory(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    _write_tiny_raw_csvs(raw, medium_bank=100, small_bank=100)
+    cfg = load_feature_build_config(default_feature_build_config_path())
+
+    spec = FeatureBuildRunSpec(
+        output_subdir=bank_scoped_output_subdir(bank_id=100),
+        bank_id=100,
+    )
+    result = run_feature_build(
+        spec,
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        skip_preprocess=False,
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+
+    proc = feature_output_processed_dir(
+        output_subdir="bank_100", processed_root=proc_root
+    )
+    interim = feature_output_interim_dir(output_subdir="bank_100", interim_root=interim_root)
+    paths = feature_parquet_paths(medium_bank_id=100, small_bank_id=100, processed_dir=proc)
+    assert paths["experiment_medium"].is_file()
+    assert (interim / MANIFEST_JSON).is_file()
+    assert result["output_subdir"] == "bank_100"
+    assert result["manifest"] == str((interim / MANIFEST_JSON).resolve())
+
+
+def test_run_feature_build_partial_when_bank_missing_from_one_split(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    _write_tiny_raw_csvs(raw, medium_bank=100, small_bank=999)
+    cfg = load_feature_build_config(default_feature_build_config_path())
+
+    result = run_feature_build(
+        FeatureBuildRunSpec(
+            output_subdir=bank_scoped_output_subdir(bank_id=100),
+            bank_id=100,
+        ),
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        skip_preprocess=False,
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+
+    proc = feature_output_processed_dir(
+        output_subdir="bank_100", processed_root=proc_root
+    )
+    interim = feature_output_interim_dir(output_subdir="bank_100", interim_root=interim_root)
+    paths = feature_parquet_paths(medium_bank_id=100, small_bank_id=100, processed_dir=proc)
+    assert result.get("status") != "skipped"
+    assert result["available_splits"] == ["medium"]
+    assert result["missing_splits"] == ["small"]
+    assert paths["experiment_medium"].is_file()
+    assert not paths["experiment_small"].is_file()
+    assert (interim / MANIFEST_JSON).is_file()
+
+
+def test_run_feature_build_skips_bank_absent_from_all_splits(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    _write_tiny_raw_csvs(raw, medium_bank=999, small_bank=998)
+    cfg = load_feature_build_config(default_feature_build_config_path())
+
+    result = run_feature_build(
+        FeatureBuildRunSpec(
+            output_subdir=bank_scoped_output_subdir(bank_id=100),
+            bank_id=100,
+        ),
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        skip_preprocess=False,
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+
+    interim = feature_output_interim_dir(output_subdir="bank_100", interim_root=interim_root)
+    assert result["status"] == "skipped"
+    assert result["missing_bank_id"] == 100
+    assert not (interim / MANIFEST_JSON).exists()
+
+
+def test_run_feature_build_multiple_banks_isolated(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    cfg = load_feature_build_config(default_feature_build_config_path())
+
+    _write_tiny_raw_csvs(raw, medium_bank=100, small_bank=100)
+    run_feature_build(
+        FeatureBuildRunSpec(
+            output_subdir=bank_scoped_output_subdir(bank_id=100), bank_id=100
+        ),
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        skip_preprocess=False,
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+
+    _write_tiny_raw_csvs(raw, medium_bank=70, small_bank=70)
+    run_feature_build(
+        FeatureBuildRunSpec(
+            output_subdir=bank_scoped_output_subdir(bank_id=70), bank_id=70
+        ),
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        skip_preprocess=False,
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+
+    proc_100 = feature_output_processed_dir(
+        output_subdir="bank_100", processed_root=proc_root
+    )
+    proc_70 = feature_output_processed_dir(output_subdir="bank_70", processed_root=proc_root)
+    paths_100 = feature_parquet_paths(
+        medium_bank_id=100, small_bank_id=100, processed_dir=proc_100
+    )
+    paths_70 = feature_parquet_paths(
+        medium_bank_id=70, small_bank_id=70, processed_dir=proc_70
+    )
+    exp_100 = pd.read_parquet(paths_100["experiment_medium"])
+    exp_70_med = pd.read_parquet(paths_70["experiment_medium"])
+    exp_70_sml = pd.read_parquet(paths_70["experiment_small"])
+    assert len(exp_100) == 2
+    assert len(exp_70_med) == 2
+    assert len(exp_70_sml) == 1
+    assert not paths_100["experiment_medium"].samefile(paths_70["experiment_medium"])
+
+
+def test_run_feature_build_split_pair_scoped_directory(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    raw.mkdir()
+    (raw / "HI-Medium_Trans.csv").write_text(
+        _ibm_header() + "2022-01-01 00:00:00,70,1,200,2,500,USD,0\n",
+        encoding="utf-8",
+    )
+    (raw / "HI-Small_Trans.csv").write_text(
+        _ibm_header() + "2022-02-01 00:00:00,42,1,200,9,10,USD,0\n",
+        encoding="utf-8",
+    )
+    cfg = load_feature_build_config(default_feature_build_config_path())
+    subdir = split_pair_scoped_output_subdir(medium_bank_id=70, small_bank_id=42)
+
+    result = run_feature_build(
+        FeatureBuildRunSpec(
+            output_subdir=subdir,
+            medium_bank_id=70,
+            small_bank_id=42,
+        ),
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        skip_preprocess=False,
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+
+    proc = feature_output_processed_dir(output_subdir=subdir, processed_root=proc_root)
+    assert result["output_subdir"] == subdir
+    assert feature_parquet_paths(
+        medium_bank_id=70, small_bank_id=42, processed_dir=proc
+    )["txn_level_small"].is_file()
+
+
+def test_run_feature_build_reuses_existing_artifacts_without_preprocess(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    _write_tiny_raw_csvs(raw, medium_bank=100, small_bank=100)
+    cfg = load_feature_build_config(default_feature_build_config_path())
+    spec = FeatureBuildRunSpec(
+        output_subdir=bank_scoped_output_subdir(bank_id=100), bank_id=100
+    )
+    common = dict(
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+    first = run_feature_build(spec, skip_preprocess=False, **common)
+    assert first.get("reused_existing") is not True
+
+    reused = run_feature_build(spec, skip_preprocess=False, **common)
+    assert reused.get("reused_existing") is True
+    assert reused["output_subdir"] == "bank_100"
+    assert reused["manifest"] == first["manifest"]
+
+
+def test_run_feature_build_force_rebuild_regenerates(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    _write_tiny_raw_csvs(raw, medium_bank=100, small_bank=100)
+    cfg = load_feature_build_config(default_feature_build_config_path())
+    spec = FeatureBuildRunSpec(
+        output_subdir=bank_scoped_output_subdir(bank_id=100), bank_id=100
+    )
+    common = dict(
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+    run_feature_build(spec, skip_preprocess=False, force_rebuild=False, **common)
+    rebuilt = run_feature_build(spec, skip_preprocess=False, force_rebuild=True, **common)
+    assert rebuilt.get("reused_existing") is not True
+
+
+def test_run_feature_build_skip_preprocess_uses_scoped_cache(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    proc_root = tmp_path / "processed"
+    interim_root = tmp_path / "interim"
+    _write_tiny_raw_csvs(raw, medium_bank=100, small_bank=100)
+    cfg = load_feature_build_config(default_feature_build_config_path())
+    spec = FeatureBuildRunSpec(
+        output_subdir=bank_scoped_output_subdir(bank_id=100), bank_id=100
+    )
+    common = dict(
+        raw_dir=raw,
+        medium_file="HI-Medium_Trans.csv",
+        small_file="HI-Small_Trans.csv",
+        force_rebuild=False,
+        min_positive=1,
+        min_negative=1,
+        processed_root=proc_root,
+        interim_root=interim_root,
+        loaded_feature_cfg=cfg,
+    )
+    run_feature_build(spec, skip_preprocess=False, **common)
+    cached = run_feature_build(spec, skip_preprocess=True, **common)
+    proc = feature_output_processed_dir(
+        output_subdir="bank_100", processed_root=proc_root
+    )
+    assert feature_artifacts_present(
+        medium_bank_id=100,
+        small_bank_id=100,
+        processed_dir=proc,
+        interim_dir=feature_output_interim_dir(
+            output_subdir="bank_100", interim_root=interim_root
+        ),
+        feature_config_signature=cfg.signature,
+    )
+    assert cached["output_subdir"] == "bank_100"

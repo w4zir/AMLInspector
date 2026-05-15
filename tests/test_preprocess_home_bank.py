@@ -130,6 +130,36 @@ def test_run_preprocess_medium_small_separate_bank_ids(tmp_path: Path) -> None:
     assert len(sdf) == 1
 
 
+def test_run_preprocess_medium_small_allows_partial_split(tmp_path: Path) -> None:
+    med = tmp_path / "HI-Medium_Trans.csv"
+    sml = tmp_path / "HI-Small_Trans.csv"
+    med.write_text(
+        "Timestamp,From Bank,Account,To Bank,Account,Is Laundering\n"
+        "2022-01-01,2,1,200,2,0\n",
+        encoding="utf-8",
+    )
+    sml.write_text(
+        "Timestamp,From Bank,Account,To Bank,Account,Is Laundering\n"
+        "2022-02-01,999,1,200,9,0\n",
+        encoding="utf-8",
+    )
+    summary = run_preprocess_medium_small(
+        raw_dir=tmp_path,
+        bank_id=2,
+        medium_file=med.name,
+        small_file=sml.name,
+        output_medium=tmp_path / "m.parquet",
+        output_small=tmp_path / "s.parquet",
+        summary_json=tmp_path / "sum.json",
+    )
+    assert summary["available_splits"] == ["medium"]
+    assert summary["missing_splits"] == ["small"]
+    assert summary["filtered_row_count_medium"] == 1
+    assert summary["filtered_row_count_small"] == 0
+    assert (tmp_path / "m.parquet").is_file()
+    assert not (tmp_path / "s.parquet").is_file()
+
+
 def test_run_preprocess_auto_bank_requires_min_counts(tmp_path: Path):
     csv = tmp_path / "only_neg.csv"
     csv.write_text(

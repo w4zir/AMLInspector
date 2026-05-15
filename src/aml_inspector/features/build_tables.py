@@ -54,6 +54,37 @@ SALT_FILENAME = "project_hash_salt.txt"
 FX_FILENAME = "fx_rates_mvp.json"
 CORRIDOR_FIT_FILENAME = "corridor_risk_fit_medium.json"
 
+_MEDIUM_OUTPUT_KEYS = (
+    "txn_level_medium",
+    "account_txn_medium",
+    "account_graph_medium",
+    "account_daily_medium",
+    "experiment_medium",
+)
+_SMALL_OUTPUT_KEYS = (
+    "txn_level_small",
+    "account_txn_small",
+    "account_graph_small",
+    "account_daily_small",
+    "experiment_small",
+)
+
+
+def _resolve_available_splits(
+    path_medium: Path,
+    path_small: Path,
+    preprocess_summary: dict[str, Any] | None,
+) -> set[str]:
+    if preprocess_summary is not None and "available_splits" in preprocess_summary:
+        return {str(s) for s in preprocess_summary["available_splits"]}
+    available: set[str] = set()
+    if path_medium.is_file():
+        available.add(DATA_SPLIT_MEDIUM)
+    if path_small.is_file():
+        available.add(DATA_SPLIT_SMALL)
+    return available
+
+
 def feature_artifacts_present(
     *,
     medium_bank_id: int,
@@ -82,8 +113,14 @@ def feature_artifacts_present(
         small_bank_id=small_bank_id,
         processed_dir=processed_dir,
     )
-    for path in paths.values():
-        if not path.is_file():
+    available = manifest.get("available_splits", [DATA_SPLIT_MEDIUM, DATA_SPLIT_SMALL])
+    keys_to_check: list[str] = []
+    if DATA_SPLIT_MEDIUM in available:
+        keys_to_check.extend(_MEDIUM_OUTPUT_KEYS)
+    if DATA_SPLIT_SMALL in available:
+        keys_to_check.extend(_SMALL_OUTPUT_KEYS)
+    for key in keys_to_check:
+        if not paths[key].is_file():
             return None
     return manifest
 
@@ -624,21 +661,42 @@ def build_all_feature_tables(
     salt = ensure_hash_salt(interim_dir)
     fx = load_or_create_fx(interim_dir)
 
-    med = pd.read_parquet(path_medium)
-    sml = pd.read_parquet(path_small)
-    logger.info("loaded Parquets: Medium=%s rows, Small=%s rows", len(med), len(sml))
+    available_splits = _resolve_available_splits(
+        path_medium, path_small, preprocess_summary
+    )
+    if not available_splits:
+        raise FileNotFoundError(
+            f"No home-bank Parquets found for feature build "
+            f"(medium={path_medium}, small={path_small})"
+        )
 
-    med, stat_med = _filter_home_bank_rows(med, medium_bank_id, split_label="medium")
-    sml, stat_sml = _filter_home_bank_rows(sml, small_bank_id, split_label="small")
-    bank_filter_stats = {"medium": stat_med, "small": stat_sml}
+    med: pd.DataFrame | None = None
+    sml: pd.DataFrame | None = None
+    bank_filter_stats: dict[str, dict[str, int]] = {}
+    if DATA_SPLIT_MEDIUM in available_splits:
+        med = pd.read_parquet(path_medium)
+        logger.info("loaded Medium Parquet: %s rows", len(med))
+        med, stat_med = _filter_home_bank_rows(med, medium_bank_id, split_label="medium")
+        bank_filter_stats["medium"] = stat_med
+    if DATA_SPLIT_SMALL in available_splits:
+        sml = pd.read_parquet(path_small)
+        logger.info("loaded Small Parquet: %s rows", len(sml))
+        sml, stat_sml = _filter_home_bank_rows(sml, small_bank_id, split_label="small")
+        bank_filter_stats["small"] = stat_sml
 
-    logger.info("enrich_transaction_frame: Medium …")
-    med = enrich_transaction_frame(med, medium_bank_id, salt, fx)
-    logger.info("enrich_transaction_frame: Small …")
-    sml = enrich_transaction_frame(sml, small_bank_id, salt, fx)
+    if med is not None:
+        logger.info("enrich_transaction_frame: Medium …")
+        med = enrich_transaction_frame(med, medium_bank_id, salt, fx)
+    if sml is not None:
+        logger.info("enrich_transaction_frame: Small …")
+        sml = enrich_transaction_frame(sml, small_bank_id, salt, fx)
+
+    fit_df = med if med is not None else sml
+    assert fit_df is not None
+    fit_bank_id = medium_bank_id if med is not None else small_bank_id
 
     if flags.corridor_risk_score:
-        corridor_fit = fit_corridor_scores(med, interim_dir)
+        corridor_fit = fit_corridor_scores(fit_df, interim_dir)
     else:
         corridor_fit = {"weights": {}, "max_count": 1.0}
         interim_dir.mkdir(parents=True, exist_ok=True)
@@ -646,63 +704,80 @@ def build_all_feature_tables(
             json.dumps(corridor_fit, indent=2), encoding="utf-8"
         )
         logger.info("corridor_risk_score disabled: wrote empty corridor fit and using score 0.0")
-    med["corridor_risk_score"] = apply_corridor_scores(med, corridor_fit)
-    sml["corridor_risk_score"] = apply_corridor_scores(sml, corridor_fit)
+    if med is not None:
+        med["corridor_risk_score"] = apply_corridor_scores(med, corridor_fit)
+    if sml is not None:
+        sml["corridor_risk_score"] = apply_corridor_scores(sml, corridor_fit)
 
-    med = med.copy()
-    sml = sml.copy()
-    med[EVENT_TIMESTAMP_COL] = pd.to_datetime(med[EVENT_TIMESTAMP_COL], utc=True)
-    sml[EVENT_TIMESTAMP_COL] = pd.to_datetime(sml[EVENT_TIMESTAMP_COL], utc=True)
+    if med is not None:
+        med = med.copy()
+        med[EVENT_TIMESTAMP_COL] = pd.to_datetime(med[EVENT_TIMESTAMP_COL], utc=True)
+    if sml is not None:
+        sml = sml.copy()
+        sml[EVENT_TIMESTAMP_COL] = pd.to_datetime(sml[EVENT_TIMESTAMP_COL], utc=True)
 
     if flags.weekly_internal_graph:
-        logger.info("fitting weekly internal graph features from Medium …")
-        graph_df = build_weekly_internal_graph_features(med, medium_bank_id)
+        logger.info(
+            "fitting weekly internal graph features from %s …",
+            DATA_SPLIT_MEDIUM if med is not None else DATA_SPLIT_SMALL,
+        )
+        graph_df = build_weekly_internal_graph_features(fit_df, fit_bank_id)
         logger.info("graph feature rows: %s", len(graph_df))
-        med_ts = med[EVENT_TIMESTAMP_COL]
-        sml_ts = sml[EVENT_TIMESTAMP_COL]
-        if med_ts.dt.tz is not None:
-            med_ts = med_ts.dt.tz_convert("UTC").dt.tz_localize(None)
-        if sml_ts.dt.tz is not None:
-            sml_ts = sml_ts.dt.tz_convert("UTC").dt.tz_localize(None)
-        med["_week"] = med_ts.dt.to_period("W-MON").astype(str)
-        sml["_week"] = sml_ts.dt.to_period("W-MON").astype(str)
-        med = med.merge(
-            graph_df,
-            how="left",
-            left_on=[ENTITY_ID_COL, "_week"],
-            right_on=[ENTITY_ID_COL, "period"],
-        )
-        sml = sml.merge(
-            graph_df,
-            how="left",
-            left_on=[ENTITY_ID_COL, "_week"],
-            right_on=[ENTITY_ID_COL, "period"],
-        )
-        for d in (med, sml):
-            d["graph_internal_degree"] = (
-                pd.to_numeric(d["graph_internal_degree"], errors="coerce").fillna(0).astype("Int64")
+        for split_label, frame in ((DATA_SPLIT_MEDIUM, med), (DATA_SPLIT_SMALL, sml)):
+            if frame is None:
+                continue
+            ts = frame[EVENT_TIMESTAMP_COL]
+            if ts.dt.tz is not None:
+                ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+            frame["_week"] = ts.dt.to_period("W-MON").astype(str)
+            merged = frame.merge(
+                graph_df,
+                how="left",
+                left_on=[ENTITY_ID_COL, "_week"],
+                right_on=[ENTITY_ID_COL, "period"],
             )
-            d["graph_component_size"] = (
-                pd.to_numeric(d["graph_component_size"], errors="coerce").fillna(1).astype("Int64")
+            merged["graph_internal_degree"] = (
+                pd.to_numeric(merged["graph_internal_degree"], errors="coerce")
+                .fillna(0)
+                .astype("Int64")
             )
-            d.drop(columns=["_week", "period"], inplace=True, errors="ignore")
+            merged["graph_component_size"] = (
+                pd.to_numeric(merged["graph_component_size"], errors="coerce")
+                .fillna(1)
+                .astype("Int64")
+            )
+            merged.drop(columns=["_week", "period"], inplace=True, errors="ignore")
+            if split_label == DATA_SPLIT_MEDIUM:
+                med = merged
+            else:
+                sml = merged
     else:
         logger.info("weekly_internal_graph disabled: using degree=0, component_size=1")
-        for d in (med, sml):
-            d["graph_internal_degree"] = pd.Series(0, index=d.index, dtype="Int64")
-            d["graph_component_size"] = pd.Series(1, index=d.index, dtype="Int64")
+        for frame in (med, sml):
+            if frame is None:
+                continue
+            frame["graph_internal_degree"] = pd.Series(0, index=frame.index, dtype="Int64")
+            frame["graph_component_size"] = pd.Series(1, index=frame.index, dtype="Int64")
 
-    for d in (med, sml):
-        d["counterparty_bank_id"] = (
-            pd.to_numeric(d["counterparty_bank_id"], errors="coerce").fillna(-1).astype("int64")
+    for frame in (med, sml):
+        if frame is None:
+            continue
+        frame["counterparty_bank_id"] = (
+            pd.to_numeric(frame["counterparty_bank_id"], errors="coerce")
+            .fillna(-1)
+            .astype("int64")
         )
 
     logger.info("computing rolling / proxy features per split …")
-    med_out = _apply_rolling_and_proxy_features(
-        med, bank_id=medium_bank_id, salt=salt, flags=flags
+    med_out = (
+        _apply_rolling_and_proxy_features(med, bank_id=medium_bank_id, salt=salt, flags=flags)
+        if med is not None
+        else None
     )
-    sml_out = _apply_rolling_and_proxy_features(
-        sml, bank_id=small_bank_id, salt=salt, flags=flags
+    sml_out = (
+        _apply_rolling_and_proxy_features(sml, bank_id=small_bank_id, salt=salt, flags=flags)
+        if sml is not None
+        else None
     )
 
     txn_cols = [
@@ -729,21 +804,6 @@ def build_all_feature_tables(
         "company_age_days_proxy",
         LABEL_COL,
     ]
-    txn_med = med_out[[c for c in txn_cols if c in med_out.columns]]
-    txn_sml = sml_out[[c for c in txn_cols if c in sml_out.columns]]
-    logger.info(
-        "writing %s (%s rows) …",
-        output_paths["txn_level_medium"].name,
-        len(txn_med),
-    )
-    txn_med.to_parquet(output_paths["txn_level_medium"], index=False)
-    logger.info(
-        "writing %s (%s rows) …",
-        output_paths["txn_level_small"].name,
-        len(txn_sml),
-    )
-    txn_sml.to_parquet(output_paths["txn_level_small"], index=False)
-
     acc_txn_cols = [
         ENTITY_ID_COL,
         EVENT_TIMESTAMP_COL,
@@ -754,33 +814,12 @@ def build_all_feature_tables(
         "fanout_unique_internal_30d",
         "company_age_days_proxy",
     ]
-    acc_txn_med = med_out[acc_txn_cols].copy()
-    acc_txn_sml = sml_out[acc_txn_cols].copy()
-    acc_txn_med.to_parquet(output_paths["account_txn_medium"], index=False)
-    acc_txn_sml.to_parquet(output_paths["account_txn_small"], index=False)
-
     acc_graph_cols = [
         ENTITY_ID_COL,
         EVENT_TIMESTAMP_COL,
         "graph_internal_degree",
         "graph_component_size",
     ]
-    acc_graph_med = med_out[acc_graph_cols].copy()
-    acc_graph_sml = sml_out[acc_graph_cols].copy()
-    acc_graph_med.to_parquet(output_paths["account_graph_medium"], index=False)
-    acc_graph_sml.to_parquet(output_paths["account_graph_small"], index=False)
-
-    daily_med = (
-        build_account_daily(med_out) if flags.account_daily else _empty_account_daily_frame()
-    )
-    daily_sml = (
-        build_account_daily(sml_out) if flags.account_daily else _empty_account_daily_frame()
-    )
-    if not flags.account_daily:
-        logger.info("account_daily disabled: writing empty Parquets with schema preserved")
-    daily_med.to_parquet(output_paths["account_daily_medium"], index=False)
-    daily_sml.to_parquet(output_paths["account_daily_small"], index=False)
-
     base_cols = [
         TRANSACTION_ID_COL,
         EVENT_TIMESTAMP_COL,
@@ -789,21 +828,81 @@ def build_all_feature_tables(
         LABEL_COL,
     ]
     feat_cols = [c for c in txn_cols if c not in set(base_cols)]
-    exp_med = med_out[base_cols + feat_cols].copy()
-    exp_sml = sml_out[base_cols + feat_cols].copy()
-    logger.info(
-        "writing experiment Parquets: %s (%s rows), %s (%s rows) …",
-        output_paths["experiment_medium"].name,
-        len(exp_med),
-        output_paths["experiment_small"].name,
-        len(exp_sml),
-    )
-    exp_med.to_parquet(output_paths["experiment_medium"], index=False)
-    exp_sml.to_parquet(output_paths["experiment_small"], index=False)
+
+    written_outputs: dict[str, Path] = {}
+    if med_out is not None:
+        txn_med = med_out[[c for c in txn_cols if c in med_out.columns]]
+        logger.info(
+            "writing %s (%s rows) …",
+            output_paths["txn_level_medium"].name,
+            len(txn_med),
+        )
+        txn_med.to_parquet(output_paths["txn_level_medium"], index=False)
+        written_outputs["txn_level_medium"] = output_paths["txn_level_medium"]
+        med_out[acc_txn_cols].copy().to_parquet(
+            output_paths["account_txn_medium"], index=False
+        )
+        written_outputs["account_txn_medium"] = output_paths["account_txn_medium"]
+        med_out[acc_graph_cols].copy().to_parquet(
+            output_paths["account_graph_medium"], index=False
+        )
+        written_outputs["account_graph_medium"] = output_paths["account_graph_medium"]
+        daily_med = (
+            build_account_daily(med_out)
+            if flags.account_daily
+            else _empty_account_daily_frame()
+        )
+        daily_med.to_parquet(output_paths["account_daily_medium"], index=False)
+        written_outputs["account_daily_medium"] = output_paths["account_daily_medium"]
+        exp_med = med_out[base_cols + feat_cols].copy()
+        logger.info(
+            "writing experiment Parquet: %s (%s rows) …",
+            output_paths["experiment_medium"].name,
+            len(exp_med),
+        )
+        exp_med.to_parquet(output_paths["experiment_medium"], index=False)
+        written_outputs["experiment_medium"] = output_paths["experiment_medium"]
+
+    if sml_out is not None:
+        txn_sml = sml_out[[c for c in txn_cols if c in sml_out.columns]]
+        logger.info(
+            "writing %s (%s rows) …",
+            output_paths["txn_level_small"].name,
+            len(txn_sml),
+        )
+        txn_sml.to_parquet(output_paths["txn_level_small"], index=False)
+        written_outputs["txn_level_small"] = output_paths["txn_level_small"]
+        sml_out[acc_txn_cols].copy().to_parquet(
+            output_paths["account_txn_small"], index=False
+        )
+        written_outputs["account_txn_small"] = output_paths["account_txn_small"]
+        sml_out[acc_graph_cols].copy().to_parquet(
+            output_paths["account_graph_small"], index=False
+        )
+        written_outputs["account_graph_small"] = output_paths["account_graph_small"]
+        daily_sml = (
+            build_account_daily(sml_out)
+            if flags.account_daily
+            else _empty_account_daily_frame()
+        )
+        daily_sml.to_parquet(output_paths["account_daily_small"], index=False)
+        written_outputs["account_daily_small"] = output_paths["account_daily_small"]
+        exp_sml = sml_out[base_cols + feat_cols].copy()
+        logger.info(
+            "writing experiment Parquet: %s (%s rows) …",
+            output_paths["experiment_small"].name,
+            len(exp_sml),
+        )
+        exp_sml.to_parquet(output_paths["experiment_small"], index=False)
+        written_outputs["experiment_small"] = output_paths["experiment_small"]
+
+    if not flags.account_daily and (med_out is not None or sml_out is not None):
+        logger.info("account_daily disabled: writing empty Parquets with schema preserved")
 
     manifest: dict[str, Any] = {
         "medium_bank_id": medium_bank_id,
         "small_bank_id": small_bank_id,
+        "available_splits": sorted(available_splits),
         "git_sha": _git_sha(),
         "feature_config_signature": feature_build_config.signature,
         "feature_config": {
@@ -811,9 +910,9 @@ def build_all_feature_tables(
             "groups": feature_build_config.groups_meta,
             "bank_filter": bank_filter_stats,
         },
-        "outputs": {k: str(v.resolve()) for k, v in output_paths.items()},
+        "outputs": {k: str(v.resolve()) for k, v in written_outputs.items()},
         "output_filenames": {
-            k: v.name for k, v in output_paths.items()
+            k: v.name for k, v in written_outputs.items()
         },
         "interim_artifacts": {
             "hash_salt_file": str((interim_dir / SALT_FILENAME).resolve()),

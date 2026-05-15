@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from aml_inspector.config import DATA_PROCESSED
+from aml_inspector.config import DATA_INTERIM, DATA_PROCESSED
 
 # Canonical modeling columns (after feature pipeline)
 ENTITY_ID_COL = "account_id"
@@ -41,6 +41,47 @@ FEATURE_BASE_ACCOUNT_DAILY = "account_daily_features"
 FEATURE_BASE_EXPERIMENT = "experiment_entity_df"
 
 MANIFEST_JSON = "feature_build_manifest.json"
+
+
+def bank_scoped_output_subdir(*, bank_id: int) -> str:
+    """Subdirectory name for a single home bank used on both HI-Medium and HI-Small."""
+    return f"bank_{int(bank_id)}"
+
+
+def split_pair_scoped_output_subdir(*, medium_bank_id: int, small_bank_id: int) -> str:
+    """Subdirectory when Medium and Small use different home bank ids."""
+    return f"medium_{int(medium_bank_id)}_small_{int(small_bank_id)}"
+
+
+def resolve_feature_output_subdir(*, medium_bank_id: int, small_bank_id: int) -> str:
+    """Pick bank-scoped or split-pair subdir from resolved bank ids."""
+    if medium_bank_id == small_bank_id:
+        return bank_scoped_output_subdir(bank_id=medium_bank_id)
+    return split_pair_scoped_output_subdir(
+        medium_bank_id=medium_bank_id,
+        small_bank_id=small_bank_id,
+    )
+
+
+def feature_output_processed_dir(
+    *,
+    output_subdir: str,
+    processed_root: Path | None = None,
+) -> Path:
+    """``data/processed/<output_subdir>`` (or under ``processed_root``)."""
+    root = processed_root or DATA_PROCESSED
+    return root / output_subdir
+
+
+def feature_output_interim_dir(
+    *,
+    output_subdir: str,
+    interim_root: Path | None = None,
+) -> Path:
+    """``data/interim/<output_subdir>`` (or under ``interim_root``)."""
+    root = interim_root or DATA_INTERIM
+    return root / output_subdir
+
 
 def dataset_token_for_split(split: str) -> str:
     """Map ``medium`` / ``small`` split labels to filename tokens."""

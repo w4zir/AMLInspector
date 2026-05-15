@@ -79,6 +79,14 @@ def _bundle_from_dict(d: dict[str, Any]) -> ExperimentBundle:
         split_counts=split_counts,
         champion_params=dict(d.get("champion_params", {})),
         challenger_params=dict(d.get("challenger_params", {})),
+        training_bank_ids=[int(x) for x in d.get("training_bank_ids", [])],
+        testing_bank_ids=[int(x) for x in d.get("testing_bank_ids", [])],
+        loaded_training_bank_ids=[int(x) for x in d.get("loaded_training_bank_ids", [])],
+        skipped_training_bank_ids=[int(x) for x in d.get("skipped_training_bank_ids", [])],
+        loaded_testing_bank_ids=[int(x) for x in d.get("loaded_testing_bank_ids", [])],
+        skipped_testing_bank_ids=[int(x) for x in d.get("skipped_testing_bank_ids", [])],
+        feature_config_path=str(d.get("feature_config_path", "")),
+        feature_config_signature=str(d.get("feature_config_signature", "")),
     )
 
 
